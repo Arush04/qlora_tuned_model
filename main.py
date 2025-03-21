@@ -13,10 +13,15 @@ def cleanup():
 
 def setup(rank, world_size):
     """Initialize distributed training environment"""
-    os.environ['MASTER_ADDR'] = 'localhost'
+    os.environ['MASTER_ADDR'] = '127.0.0.1'  # Use 127.0.0.1 instead of 'localhost'
     os.environ['MASTER_PORT'] = '12355'
-    os.environ["CUDA_VISIBLE_DEVICES"] = "0,1"
-    dist.init_process_group(backend='nccl', init_method='env://', rank = torch.cuda.device_count(), world_size=world_size)
+    
+    dist.init_process_group(
+        backend='nccl', 
+        init_method='env://', 
+        rank=rank,  # Use the rank passed to the function
+        world_size=world_size
+    )
 
 def train_with_fsdp(rank, world_size, training_dataset, testing_dataset):
     """Main training function for each process"""
