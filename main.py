@@ -12,10 +12,11 @@ def cleanup():
     dist.destroy_process_group()
 
 def setup(rank, world_size):
-    os.environ["MASTER_ADDR"] = "localhost"
-    os.environ["MASTER_PORT"] = "12355"
-    dist.init_process_group(backend="nccl", rank=rank, world_size=world_size)
-    torch.cuda.set_device(rank)  # Assign correct GPU per process
+    """Initialize distributed training environment"""
+    os.environ['MASTER_ADDR'] = 'localhost'
+    os.environ['MASTER_PORT'] = '12355'
+    os.environ["CUDA_VISIBLE_DEVICES"] = "0,1"
+    dist.init_process_group(backend='nccl', init_method='env://', rank = torch.cuda.device_count(), world_size=world_size)
 
 def train_with_fsdp(rank, world_size, training_dataset, testing_dataset):
     """Main training function for each process"""
