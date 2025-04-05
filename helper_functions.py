@@ -58,14 +58,14 @@ def preprocess_dataset(tokenizer: AutoTokenizer, max_length: int,seed, dataset):
     
     # Add prompt to each sample
     print("Preprocessing dataset...")
-    dataset = dataset.map(create_prompt_formats)#, batched=True)
+    dataset = dataset.map(prompt_helper_function)#, batched=True)
     
     # Apply preprocessing to each batch of the dataset & and remove 'instruction', 'context', 'response', 'category' fields
     _preprocessing_function = partial(preprocess_batch, max_length=max_length, tokenizer=tokenizer)
     dataset = dataset.map(
         _preprocessing_function,
         batched=True,
-        remove_columns=['id', 'topic', 'dialogue', 'summary'],
+        remove_columns=['Context', 'Response'],
     )
 
     # Filter out samples that have input_ids exceeding max_length
