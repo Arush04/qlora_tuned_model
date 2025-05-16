@@ -66,13 +66,6 @@ seed =42
 dataset_train_pre = preprocess_dataset(tokenizer, max_length,seed, dataset_train)
 dataset_validation_pre = preprocess_dataset(tokenizer, max_length,seed, dataset_validation)
 
-model = accelerator.prepare_model(model)
-
-# Enable model parallelism if multiple GPUs are available
-if torch.cuda.device_count() > 1:
-    model.is_parallelizable = True
-    model.model_parallel = True
-
 # Training
 model = prepare_model_for_kbit_training(model)
 config = LoraConfig(
@@ -90,9 +83,14 @@ config = LoraConfig(
 )
 
 model.gradient_checkpointing_enable()
-
 peft_model = get_peft_model(model, config)
 
+model = accelerator.prepare_model(model)
+
+# Enable model parallelism if multiple GPUs are available
+if torch.cuda.device_count() > 1:
+    model.is_parallelizable = True
+    model.model_parallel = True
 
 peft_training_args = TrainingArguments(
     output_dir = output_dir,
