@@ -264,4 +264,4 @@ def fsdp_main():
     cleanup()
 
 if __name__ == '__main__':
-    main()
+    fsdp_main()
