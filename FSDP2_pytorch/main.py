@@ -164,7 +164,7 @@ def fsdp_main():
     model, tokenizer = setup_model("t5-base")
 
     # Dataset
-    dataset = load_dataset('wikihow', 'Sep', data_dir='/kaggle/input/wikihow-fsdp2')
+    dataset = load_dataset('wikihow', 'sep', data_dir='/kaggle/input/wikihow-fsdp2')
     print(dataset.keys())
     print("Size of train dataset: ", dataset['train'].shape)
     print("Size of Validation dataset: ", dataset['validation'].shape)
