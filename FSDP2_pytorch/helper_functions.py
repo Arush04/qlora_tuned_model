@@ -1,4 +1,5 @@
 from functools import partial
+from transformers import AutoTokenizer
 
 def create_prompt_formats(sample):
     """
