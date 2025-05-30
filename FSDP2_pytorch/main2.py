@@ -137,8 +137,8 @@ def fsdp_main():
     max_length = 2048  # Or use your get_max_length(model) helper
     dataset_validation_pre = preprocess_dataset(tokenizer, max_length, args.seed, dataset_validation)
 
-    train_dataset = HFTextDataset(dataset_train_pre)
-    val_dataset = HFTextDataset(dataset_validation_pre)
+    train_dataset = HFTextDataset(dataset_train)
+    val_dataset = HFTextDataset(dataset_validation)
 
     sampler1 = DistributedSampler(train_dataset, rank=rank, num_replicas=world_size, shuffle=True)
     sampler2 = DistributedSampler(val_dataset, rank=rank, num_replicas=world_size)
