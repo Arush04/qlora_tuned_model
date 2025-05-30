@@ -14,7 +14,6 @@ from helper_functions import *
 
 # --- Helper: Preprocessing ---
 class HFTextDataset(Dataset):
-    """A simple wrapper to turn tokenized HuggingFace datasets into PyTorch Datasets."""
     def __init__(self, hf_dataset, input_key="input_ids", label_key="labels"):
         self.hf_dataset = hf_dataset
         self.input_key = input_key
@@ -29,6 +28,7 @@ class HFTextDataset(Dataset):
             "input_ids": torch.tensor(item[self.input_key], dtype=torch.long),
             "labels": torch.tensor(item[self.label_key], dtype=torch.long)
         }
+
 
 # --- Training and Validation ---
 def train(args, model, rank, world_size, train_loader, optimizer, epoch, sampler=None):
@@ -145,6 +145,10 @@ def fsdp_main():
 
     train_loader = DataLoader(train_dataset, batch_size=args.batch_size, sampler=sampler1, num_workers=2, pin_memory=True)
     val_loader = DataLoader(val_dataset, batch_size=args.test_batch_size, sampler=sampler2, num_workers=2, pin_memory=True)
+    for batch in train_loader:
+        print({k: v.dtype for k, v in batch.items()})
+        break
+
 
     # LoRA config
     model = prepare_model_for_kbit_training(model)
