@@ -141,7 +141,6 @@ def main():
         trust_remote_code=True,
         use_auth_token=True
     )
-    torch.cuda.empty_cache()  # <--- after model load
 
     # ---- FSDP2 sharding ----
     world_size = dist.get_world_size()
@@ -159,7 +158,6 @@ def main():
     fully_shard(model, mesh=device_mesh, **fsdp_kwargs)
 
     model.to(device)
-    torch.cuda.empty_cache()  # <--- after moving model to device
 
     # ---- Tokenizer ----
     if rank == 0:
