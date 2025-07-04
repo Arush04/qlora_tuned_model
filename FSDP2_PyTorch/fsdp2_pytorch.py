@@ -106,13 +106,14 @@ def tokenize_function(batch, tokenizer, max_length=128):
     )
     
 def collate_fn(batch):
-    input_ids = torch.stack([item["input_ids"].squeeze(0) for item in batch])
-    attention_mask = torch.stack([item["attention_mask"].squeeze(0) for item in batch])
+    input_ids = torch.tensor([item["input_ids"] for item in batch], dtype=torch.long)
+    attention_mask = torch.tensor([item["attention_mask"] for item in batch], dtype=torch.long)
     return {
         "input_ids": input_ids,
         "attention_mask": attention_mask,
         "labels": input_ids.clone()
     }
+
 
 def main():
     rank = int(os.environ["LOCAL_RANK"])
