@@ -193,7 +193,7 @@ def main():
     dataset_test = dataset_test.map(tokenize_batch, batched=True, remove_columns=['Context', 'Response'])
 
     # ---- DataLoader ----
-    batch_size = 2
+    batch_size = 1
     train_loader = DataLoader(dataset_train, batch_size=batch_size, shuffle=True, collate_fn=collate_fn)
 
     # ---- Training Loop ----
