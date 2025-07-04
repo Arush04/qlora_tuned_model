@@ -115,8 +115,6 @@ def collate_fn(batch):
     }
 
 def main():
-    import gc
-
     rank = int(os.environ["LOCAL_RANK"])
     device = torch.device(f"cuda:{rank}")
     torch.cuda.set_device(device)
@@ -211,19 +209,12 @@ def main():
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
             optimizer.step()
             optimizer.zero_grad()
-            gc.collect()
-            torch.cuda.empty_cache()  # <--- after optimizer step
             if step % 10 == 0 and rank == 0:
                 print(f"Step {step}, Loss: {loss.item()}")
             if step == 20:  # For demonstration, stop after 20 steps
                 break
         except RuntimeError as e:
-            if "out of memory" in str(e):
-                print(f"[rank{rank}] OOM at step {step}, clearing cache and continuing...")
-                gc.collect()
-                torch.cuda.empty_cache()
-            else:
-                raise e
+            raise e
 
     dist.destroy_process_group()
 
