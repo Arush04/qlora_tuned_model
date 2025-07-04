@@ -209,6 +209,7 @@ def main():
         torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
         optimizer.step()
         optimizer.zero_grad()
+        torch.cuda.empty_cache()
         if step % 10 == 0 and rank == 0:
             print(f"Step {step}, Loss: {loss.item()}")
         if step == 20:  # For demonstration, stop after 20 steps
