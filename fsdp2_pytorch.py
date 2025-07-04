@@ -57,7 +57,7 @@ def main():
     import torch.distributed.checkpoint as dcp
     model_state_dict = model.state_dict()
     dcp.load(state_dict=model_state_dict, checkpoint_id="my_llama3_weights_dcp")
-    model.load_state_dict(model_state_dict)
+    model.load_state_dict(model_state_dict, strict=False)
 
     # 8. Prepare for QLoRA
     model = prepare_model_for_kbit_training(model, use_gradient_checkpointing=True)
