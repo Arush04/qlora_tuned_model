@@ -1,99 +1,129 @@
-import argparse
 import os
-
 import torch
-# from checkpoint import Checkpointer
-# from model import ModelArgs, Transformer
-from torch.distributed.fsdp import fully_shard, MixedPrecisionPolicy
-# from utils import inspect_mixed_precision, inspect_model
+import torch.distributed as dist
+from torch.utils.data import DataLoader
+from torch.distributed._composable.fsdp import fully_shard
+from torch.distributed.device_mesh import init_device_mesh
+from torch.distributed.fsdp import MixedPrecisionPolicy
+from transformers import (
+    AutoConfig, AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
+)
+from datasets import load_dataset
 
+def tokenize_function(batch, tokenizer, max_length=128):
+    return tokenizer(
+        batch["text"],
+        truncation=True,
+        max_length=max_length,
+        padding="max_length",
+        return_tensors="pt"
+    )
 
-def set_modules_to_forward_prefetch(model, num_to_forward_prefetch):
-    for i, layer in enumerate(model.layers):
-        if i >= len(model.layers) - num_to_forward_prefetch:
-            break
-        layers_to_prefetch = [
-            model.layers[i + j] for j in range(1, num_to_forward_prefetch + 1)
-        ]
-        layer.set_modules_to_forward_prefetch(layers_to_prefetch)
+def collate_fn(batch):
+    input_ids = torch.stack([item["input_ids"].squeeze(0) for item in batch])
+    attention_mask = torch.stack([item["attention_mask"].squeeze(0) for item in batch])
+    return {
+        "input_ids": input_ids,
+        "attention_mask": attention_mask,
+        "labels": input_ids.clone()
+    }
 
-
-def set_modules_to_backward_prefetch(model, num_to_backward_prefetch):
-    for i, layer in enumerate(model.layers):
-        if i < num_to_backward_prefetch:
-            continue
-        layers_to_prefetch = [
-            model.layers[i - j] for j in range(1, num_to_backward_prefetch + 1)
-        ]
-        layer.set_modules_to_backward_prefetch(layers_to_prefetch)
-
-
-def main(args):
+def main():
     rank = int(os.environ["LOCAL_RANK"])
     device = torch.device(f"cuda:{rank}")
     torch.cuda.set_device(device)
-    torch.distributed.init_process_group(backend="nccl", device_id=device)
+    dist.init_process_group(backend="nccl", rank=rank)
     torch.manual_seed(0)
-    vocab_size = 1024
-    batch_size = 32
-    seq_len = 64
-    # model_args = ModelArgs(
-    #     n_layers=10,
-    #     n_heads=4,
-    #     vocab_size=vocab_size,
-    #     max_seq_len=seq_len,
-    #     dropout_p=0,
-    # )
-    with torch.device("meta"):
-        model = Transformer(model_args)
-    fsdp_kwargs = {}
-    if args.mixed_precision:
-        fsdp_kwargs["mp_policy"] = MixedPrecisionPolicy(
+
+    base_model = "meta-llama/Llama-3.1-8B-Instruct"
+
+    # ---- BitsAndBytesConfig for FSDP2 compatibility ----
+    bnb_config = BitsAndBytesConfig(
+        load_in_4bit=True,
+        bnb_4bit_quant_type="nf4",
+        bnb_4bit_compute_dtype=torch.bfloat16,
+        bnb_4bit_quant_storage=torch.bfloat16,  # critical for FSDP2!
+    )
+
+    # ---- Load quantized model ----
+    model = AutoModelForCausalLM.from_pretrained(
+        base_model,
+        quantization_config=bnb_config,
+        torch_dtype=torch.bfloat16,  # ensure consistency
+        trust_remote_code=True,
+        use_auth_token=True
+    )
+
+    # ---- FSDP2 sharding ----
+    world_size = dist.get_world_size()
+    device_mesh = init_device_mesh("cuda", (world_size,))
+    fsdp_kwargs = {
+        "mp_policy": MixedPrecisionPolicy(
             param_dtype=torch.bfloat16,
             reduce_dtype=torch.float32,
         )
-    for layer in model.model.layers:
-        fully_shard(layer, **fsdp_kwargs)
-    fully_shard(model, **fsdp_kwargs)
+    }
+    from transformers.models.llama.modeling_llama import LlamaDecoderLayer
+    for module in model.modules():
+        if isinstance(module, LlamaDecoderLayer):
+            fully_shard(module, mesh=device_mesh, **fsdp_kwargs)
+    fully_shard(model, mesh=device_mesh, **fsdp_kwargs)
 
-    inspect_model(model)
+    model.to(device)
 
-    if args.explicit_prefetching:
-        set_modules_to_forward_prefetch(model, num_to_forward_prefetch=2)
-        set_modules_to_backward_prefetch(model, num_to_backward_prefetch=2)
+    # ---- Tokenizer ----
+    if rank == 0:
+        tokenizer = AutoTokenizer.from_pretrained(base_model, trust_remote_code=True)
+        tokenizer.pad_token = tokenizer.eos_token
+    dist.barrier()
+    tokenizer = AutoTokenizer.from_pretrained(base_model, local_files_only=True)
+    tokenizer.pad_token = tokenizer.eos_token
 
-    checkpointer = Checkpointer("checkpoints", dcp_api=args.dcp_api)
-    if checkpointer.last_training_time is None:
-        model.to_empty(device="cuda")
-        model.reset_parameters()
-    else:
-        checkpointer.load_model(model)
-    
-    if args.mixed_precision:
-        inspect_mixed_precision(model)
+    # ---- Load and split dataset ----
+    dataset = load_dataset("Amod/mental_health_counseling_conversations")
+    train_test_split = dataset["train"].train_test_split(test_size=0.3, seed=42)
+    test_validation_split = train_test_split["test"].train_test_split(test_size=1/3, seed=42)
 
-    optim = torch.optim.Adam(model.parameters(), lr=1e-2)
-    if checkpointer.last_training_time is not None:
-        checkpointer.load_optim(model, optim)
+    dataset_train = train_test_split["train"]
+    dataset_validation = test_validation_split["train"]
+    dataset_test = test_validation_split["test"]
 
-    for _ in range(10):
-        if args.explicit_prefetching:
-            model.unshard()
-        x = torch.randint(0, vocab_size, (batch_size, seq_len), device=device)
-        loss = model(x).sum()
+    if rank == 0:
+        print("training dataset ", len(dataset_train))
+        print("validation dataset ", len(dataset_validation))
+        print("test dataset ", len(dataset_test))
+
+    # ---- Tokenize datasets ----
+    def tokenize_batch(batch):
+        return tokenize_function(batch, tokenizer, max_length=128)
+
+    dataset_train = dataset_train.map(tokenize_batch, batched=True, remove_columns=["text"])
+    dataset_validation = dataset_validation.map(tokenize_batch, batched=True, remove_columns=["text"])
+    dataset_test = dataset_test.map(tokenize_batch, batched=True, remove_columns=["text"])
+
+    # ---- DataLoader ----
+    batch_size = 2
+    train_loader = DataLoader(dataset_train, batch_size=batch_size, shuffle=True, collate_fn=collate_fn)
+
+    # ---- Training Loop ----
+    model.train()
+    optimizer = torch.optim.AdamW(model.parameters(), lr=1e-4)
+    for step, batch in enumerate(train_loader):
+        input_ids = batch["input_ids"].to(device)
+        attention_mask = batch["attention_mask"].to(device)
+        labels = batch["labels"].to(device)
+        outputs = model(input_ids=input_ids, attention_mask=attention_mask, labels=labels)
+        loss = outputs.loss
         loss.backward()
         torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
-        optim.step()
-        optim.zero_grad()
+        optimizer.step()
+        optimizer.zero_grad()
+        if step % 10 == 0 and rank == 0:
+            print(f"Step {step}, Loss: {loss.item()}")
+        if step == 20:  # For demonstration, stop after 20 steps
+            break
 
-    checkpointer.save(model, optim)
-    torch.distributed.destroy_process_group()
-
+    dist.destroy_process_group()
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="PyTorch FSDP2 example")
-    parser.add_argument("--explicit-prefetching", action="store_true", default=False)
-    parser.add_argument("--mixed-precision", action="store_true", default=False)
-    parser.add_argument("--dcp-api", action="store_true", default=False)
-    args = parser.parse_args()
-    main(args)
+    main()
