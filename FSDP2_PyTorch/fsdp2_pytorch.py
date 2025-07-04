@@ -87,6 +87,15 @@ def preprocess_dataset(tokenizer: AutoTokenizer, max_length: int,seed, dataset):
 
     return dataset
 
+def create_prompt(sample):
+    prompt = (
+        "### Context:\n"
+        f"{sample['Context']}\n\n"
+        "### Response:\n"
+        f"{sample['Response']}"
+    )
+    return {"text": prompt}
+
 def tokenize_function(batch, tokenizer, max_length=128):
     return tokenizer(
         batch["text"],
@@ -95,7 +104,7 @@ def tokenize_function(batch, tokenizer, max_length=128):
         padding="max_length",
         return_tensors="pt"
     )
-
+    
 def collate_fn(batch):
     input_ids = torch.stack([item["input_ids"].squeeze(0) for item in batch])
     attention_mask = torch.stack([item["attention_mask"].squeeze(0) for item in batch])
@@ -171,9 +180,13 @@ def main():
         print("test dataset ", len(dataset_test))
 
     # ---- Tokenize datasets ----
+    dataset_train = dataset_train.map(create_prompt)
+    dataset_validation = dataset_validation.map(create_prompt)
+    dataset_test = dataset_test.map(create_prompt)
+    
     def tokenize_batch(batch):
         return tokenize_function(batch, tokenizer, max_length=128)
-
+    
     dataset_train = dataset_train.map(tokenize_batch, batched=True, remove_columns=['Context', 'Response'])
     dataset_validation = dataset_validation.map(tokenize_batch, batched=True, remove_columns=['Context', 'Response'])
     dataset_test = dataset_test.map(tokenize_batch, batched=True, remove_columns=['Context', 'Response'])
