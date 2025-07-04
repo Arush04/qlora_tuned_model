@@ -14,7 +14,7 @@ from functools import partial
 # def create_prompt_formats(sample):
 #     """
 #     Format various fields of the sample ('instruction','output')
-#     Then concatenate them using two newline characters 
+#     Then concatenate th    using two newline characters 
 #     :param sample: Sample dictionnary
 #     """
 #     INTRO_BLURB = "Below is an instruction that describes a task. Write a response that appropriately completes the request."
