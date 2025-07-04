@@ -96,7 +96,7 @@ def create_prompt(sample):
     )
     return {"text": prompt}
 
-def tokenize_function(batch, tokenizer, max_length=128):
+def tokenize_function(batch, tokenizer, max_length=64):
     return tokenizer(
         batch["text"],
         truncation=True,
@@ -129,7 +129,7 @@ def main():
         load_in_4bit=True,
         bnb_4bit_quant_type="nf4",
         bnb_4bit_compute_dtype=torch.bfloat16,
-        bnb_4bit_quant_storage=torch.bfloat16,  # critical for FSDP2!
+        bnb_4bit_quant_storage=torch.bfloat16,
     )
 
     # ---- Load quantized model ----
@@ -186,7 +186,7 @@ def main():
     dataset_test = dataset_test.map(create_prompt)
 
     def tokenize_batch(batch):
-        return tokenize_function(batch, tokenizer, max_length=128)
+        return tokenize_function(batch, tokenizer, max_length=64)
 
     dataset_train = dataset_train.map(tokenize_batch, batched=True, remove_columns=['Context', 'Response'])
     dataset_validation = dataset_validation.map(tokenize_batch, batched=True, remove_columns=['Context', 'Response'])
@@ -198,7 +198,7 @@ def main():
 
     # ---- Training Loop ----
     model.train()
-    optimizer = torch.optim.AdamW(model.parameters(), lr=1e-4)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=1e-3)
     for step, batch in enumerate(train_loader):
         input_ids = batch["input_ids"].to(device)
         attention_mask = batch["attention_mask"].to(device)
