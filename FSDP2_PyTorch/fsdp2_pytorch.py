@@ -10,89 +10,12 @@ from transformers import (
 )
 from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training
 from datasets import load_dataset
-# from functools import partial
-
-# def create_prompt_formats(sample):
-#     """
-#     Format various fields of the sample ('instruction','output')
-#     Then concatenate them using two newline characters 
-#     :param sample: Sample dictionnary
-#     """
-#     INTRO_BLURB = "Below is an instruction that describes a task. Write a response that appropriately completes the request."
-#     INSTRUCTION_KEY = "### Instruct: Summarize the below conversation."
-#     RESPONSE_KEY = "### Output:"
-#     END_KEY = "### End"
-
-#     blurb = f"\n{INTRO_BLURB}"
-#     instruction = f"{INSTRUCTION_KEY}"
-#     input_context = f"{sample['dialogue']}" if sample["dialogue"] else None
-#     response = f"{RESPONSE_KEY}\n{sample['summary']}"
-#     end = f"{END_KEY}"
-
-#     parts = [part for part in [blurb, instruction, input_context, response, end] if part]
-
-#     formatted_prompt = "\n\n".join(parts)
-#     sample["text"] = formatted_prompt
-
-#     return sample
-
-# SOURCE https://github.com/databrickslabs/dolly/blob/master/training/trainer.py
-# def get_max_length(model):
-#     conf = model.config
-#     max_length = None
-#     for length_setting in ["n_positions", "max_position_embeddings", "seq_length"]:
-#         max_length = getattr(model.config, length_setting, None)
-#         if max_length:
-#             print(f"Found max lenth: {max_length}")
-#             break
-#     if not max_length:
-#         max_length = 1024
-#         print(f"Using default max length: {max_length}")
-#     return max_length
-
-
-# def preprocess_batch(batch, tokenizer, max_length):
-#     """
-#     Tokenizing a batch
-#     """
-#     return tokenizer(
-#         batch["text"],
-#         max_length=max_length,
-#         truncation=True,
-#     )
-
-# SOURCE https://github.com/databrickslabs/dolly/blob/master/training/trainer.py
-# def preprocess_dataset(tokenizer: AutoTokenizer, max_length: int,seed, dataset):
-#     """Format & tokenize it so it is ready for training
-#     :param tokenizer (AutoTokenizer): Model Tokenizer
-#     :param max_length (int): Maximum number of tokens to emit from tokenizer
-#     """
-
-#     # Add prompt to each sample
-#     print("Preprocessing dataset...")
-#     dataset = dataset.map(prompt_helper_function)#, batched=True)
-
-#     # Apply preprocessing to each batch of the dataset & and remove 'instruction', 'context', 'response', 'category' fields
-#     _preprocessing_function = partial(preprocess_batch, max_length=max_length, tokenizer=tokenizer)
-#     dataset = dataset.map(
-#         _preprocessing_function,
-#         batched=True,
-#         remove_columns=['Context', 'Response'],
-#     )
-
-#     # Filter out samples that have input_ids exceeding max_length
-#     dataset = dataset.filter(lambda sample: len(sample["input_ids"]) < max_length)
-
-#     # Shuffle dataset
-#     dataset = dataset.shuffle(seed=seed)
-
-#     return dataset
 
 def create_prompt(sample):
     prompt = (
-        "### Context:\n"
-        f"{sample['Context']}\n\n"
-        "### Response:\n"
+        "### Context:\\n"
+        f"{sample['Context']}\\n\\n"
+        "### Response:\\n"
         f"{sample['Response']}"
     )
     return {"text": prompt}
@@ -125,44 +48,35 @@ def main():
 
     base_model = "unsloth/Meta-Llama-3.1-8B-Instruct"
 
-    # ---- BitsAndBytesConfig for FSDP2 compatibility ----
-    bnb_config = BitsAndBytesConfig(
-        load_in_4bit=True,
-        bnb_4bit_use_double_quant=True,
-        bnb_4bit_quant_type="nf4",  # or "fp4"
-        bnb_4bit_compute_dtype=torch.float16,  # or bfloat16
-    )
-
-    # ---- Load quantized model ----
+    # ---- Load model without quantization for FSDP2 compatibility ----
     model = AutoModelForCausalLM.from_pretrained(
         base_model,
-        quantization_config=bnb_config,
-        torch_dtype=torch.bfloat16,  # ensure consistency
+        torch_dtype=torch.bfloat16,
         trust_remote_code=True,
         use_auth_token=True
     )
-    model = prepare_model_for_kbit_training(model, use_gradient_checkpointing=True)
+    model = model.to(torch.bfloat16)
+    # ---- LoRA Configuration ----
     lora_config = LoraConfig(
         r=8,
         lora_alpha=16,
-        target_modules=["q_proj", "v_proj"],
+        target_modules=["q_proj", "v_proj", "k_proj", "o_proj"],  # Added more target modules
         lora_dropout=0.05,
         bias="none",
         task_type="CAUSAL_LM",
     )
     model = get_peft_model(model, lora_config)
-    
-    # ---- Fix: Proper gradient setting for quantized + LoRA model ----
+
+    for name, param in model.named_parameters():
+        if "lora" in name.lower():
+            param.data = param.data.to(torch.bfloat16)
+
     for param in model.parameters():
         param.requires_grad = False
 
     for name, param in model.named_parameters():
         if "lora" in name.lower():
-            # Only set requires_grad=True for floating point tensors
-            if param.dtype.is_floating_point:
-                param.requires_grad = True
-            elif rank == 0:
-                print(f"Skipping non-floating point LoRA parameter: {name}, dtype: {param.dtype}")
+            param.requires_grad = True
 
     # ---- FSDP2 sharding ----
     world_size = dist.get_world_size()
@@ -173,6 +87,7 @@ def main():
             reduce_dtype=torch.float16,
         )
     }
+    
     from transformers.models.llama.modeling_llama import LlamaDecoderLayer
     for module in model.modules():
         if isinstance(module, LlamaDecoderLayer):
@@ -221,9 +136,8 @@ def main():
 
     # ---- Training Loop ----
     model.train()
-    # Fix: Only optimize parameters that actually require gradients
     trainable_params = [p for p in model.parameters() if p.requires_grad]
-    optimizer = torch.optim.AdamW(trainable_params, lr=1e-3)
+    optimizer = torch.optim.AdamW(trainable_params, lr=1e-4)  # Reduced learning rate
     
     if rank == 0:
         print(f"Number of trainable parameters: {len(trainable_params)}")
