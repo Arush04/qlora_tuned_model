@@ -152,12 +152,17 @@ def main():
     )
     model = get_peft_model(model, lora_config)
     
+    # ---- Fix: Proper gradient setting for quantized + LoRA model ----
     for param in model.parameters():
         param.requires_grad = False
 
     for name, param in model.named_parameters():
         if "lora" in name.lower():
-            param.requires_grad = True
+            # Only set requires_grad=True for floating point tensors
+            if param.dtype.is_floating_point:
+                param.requires_grad = True
+            elif rank == 0:
+                print(f"Skipping non-floating point LoRA parameter: {name}, dtype: {param.dtype}")
 
     # ---- FSDP2 sharding ----
     world_size = dist.get_world_size()
@@ -216,7 +221,15 @@ def main():
 
     # ---- Training Loop ----
     model.train()
-    optimizer = torch.optim.AdamW(model.parameters(), lr=1e-3)
+    # Fix: Only optimize parameters that actually require gradients
+    trainable_params = [p for p in model.parameters() if p.requires_grad]
+    optimizer = torch.optim.AdamW(trainable_params, lr=1e-3)
+    
+    if rank == 0:
+        print(f"Number of trainable parameters: {len(trainable_params)}")
+        total_params = sum(p.numel() for p in trainable_params)
+        print(f"Total trainable parameters: {total_params}")
+    
     for step, batch in enumerate(train_loader):
         input_ids = batch["input_ids"].to(device)
         attention_mask = batch["attention_mask"].to(device)
@@ -224,7 +237,7 @@ def main():
         outputs = model(input_ids=input_ids, attention_mask=attention_mask, labels=labels)
         loss = outputs.loss
         loss.backward()
-        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+        torch.nn.utils.clip_grad_norm_(trainable_params, max_norm=1.0)
         optimizer.step()
         optimizer.zero_grad()
         torch.cuda.empty_cache()
