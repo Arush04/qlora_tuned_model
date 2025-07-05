@@ -127,9 +127,9 @@ def main():
     # ---- BitsAndBytesConfig for FSDP2 compatibility ----
     bnb_config = BitsAndBytesConfig(
         load_in_4bit=True,
-        bnb_4bit_quant_type="nf4",
-        bnb_4bit_compute_dtype=torch.bfloat16,
-        bnb_4bit_quant_storage=torch.bfloat16,
+        bnb_4bit_use_double_quant=True,
+        bnb_4bit_quant_type="nf4",  # or "fp4"
+        bnb_4bit_compute_dtype=torch.float16,  # or bfloat16
     )
 
     # ---- Load quantized model ----
@@ -147,7 +147,7 @@ def main():
     fsdp_kwargs = {
         "mp_policy": MixedPrecisionPolicy(
             param_dtype=torch.bfloat16,
-            reduce_dtype=torch.float32,
+            reduce_dtype=torch.float16,
         )
     }
     from transformers.models.llama.modeling_llama import LlamaDecoderLayer
