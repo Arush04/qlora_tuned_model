@@ -151,6 +151,13 @@ def main():
         task_type="CAUSAL_LM",
     )
     model = get_peft_model(model, lora_config)
+    
+    for param in model.parameters():
+        param.requires_grad = False
+
+    # Enable gradients only on LoRA adapters
+    for param in model.peft_module.parameters():
+        param.requires_grad = True
 
     # ---- FSDP2 sharding ----
     world_size = dist.get_world_size()
