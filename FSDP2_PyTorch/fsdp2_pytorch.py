@@ -8,6 +8,7 @@ from torch.distributed.fsdp import MixedPrecisionPolicy
 from transformers import (
     AutoConfig, AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
 )
+from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training
 from datasets import load_dataset
 # from functools import partial
 
@@ -140,6 +141,16 @@ def main():
         trust_remote_code=True,
         use_auth_token=True
     )
+    model = prepare_model_for_kbit_training(model, use_gradient_checkpointing=True)
+    lora_config = LoraConfig(
+        r=8,
+        lora_alpha=16,
+        target_modules=["q_proj", "v_proj"],
+        lora_dropout=0.05,
+        bias="none",
+        task_type="CAUSAL_LM",
+    )
+    model = get_peft_model(model, lora_config)
 
     # ---- FSDP2 sharding ----
     world_size = dist.get_world_size()
