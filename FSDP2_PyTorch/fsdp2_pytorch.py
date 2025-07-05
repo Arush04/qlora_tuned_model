@@ -46,7 +46,7 @@ def main():
     dist.init_process_group(backend="nccl", rank=rank)
     torch.manual_seed(0)
 
-    base_model = "unsloth/Meta-Llama-3.1-8B-Instruct"
+    base_model = "meta-llama/Llama-3.1-8B-Instruct"
 
     # ---- Load model without quantization for FSDP2 compatibility ----
     model = AutoModelForCausalLM.from_pretrained(
