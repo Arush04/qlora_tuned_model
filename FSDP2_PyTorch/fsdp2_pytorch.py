@@ -155,9 +155,9 @@ def main():
     for param in model.parameters():
         param.requires_grad = False
 
-    # Enable gradients only on LoRA adapters
-    for param in model.peft_module.parameters():
-        param.requires_grad = True
+    for name, param in model.named_parameters():
+        if "lora" in name.lower():
+            param.requires_grad = True
 
     # ---- FSDP2 sharding ----
     world_size = dist.get_world_size()
