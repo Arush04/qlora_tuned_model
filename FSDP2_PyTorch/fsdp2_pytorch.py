@@ -13,9 +13,9 @@ from datasets import load_dataset
 
 def create_prompt(sample):
     prompt = (
-        "### Context:\\n"
-        f"{sample['Context']}\\n\\n"
-        "### Response:\\n"
+        "### Context:\n"
+        f"{sample['Context']}\n\n"
+        "### Response:\n"
         f"{sample['Response']}"
     )
     return {"text": prompt}
@@ -55,7 +55,6 @@ def main():
         trust_remote_code=True,
         use_auth_token=True
     )
-    model = model.to(torch.bfloat16)
     # ---- LoRA Configuration ----
     lora_config = LoraConfig(
         r=8,
@@ -66,11 +65,7 @@ def main():
         task_type="CAUSAL_LM",
     )
     model = get_peft_model(model, lora_config)
-
-    for name, param in model.named_parameters():
-        if "lora" in name.lower():
-            param.data = param.data.to(torch.bfloat16)
-
+    model = model.to(torch.bfloat16)
     for param in model.parameters():
         param.requires_grad = False
 
