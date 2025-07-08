@@ -4,11 +4,12 @@ import torch.distributed as dist
 from torch.utils.data import DataLoader
 from torch.distributed._composable.fsdp import fully_shard
 from torch.distributed.device_mesh import init_device_mesh
-from torch.distributed.fsdp import MixedPrecisionPolicy
+from torch.distributed.fsdp import MixedPrecisionPolicy, OffloadPolicy
 from transformers import (
     AutoConfig, AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
 )
 from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training
+from transformers.models.llama.modeling_llama import LlamaDecoderLayer
 from datasets import load_dataset
 
 def create_prompt(sample):
@@ -20,7 +21,7 @@ def create_prompt(sample):
     )
     return {"text": prompt}
 
-def tokenize_function(batch, tokenizer, max_length=64):
+def tokenize_function(batch, tokenizer, max_length=128):
     return tokenizer(
         batch["text"],
         truncation=True,
@@ -45,7 +46,8 @@ def main():
     torch.cuda.set_device(device)
     dist.init_process_group(backend="nccl", rank=rank)
     torch.manual_seed(0)
-
+    gradient_accumulation_steps = 2
+    total_loss = 0
     base_model = "meta-llama/Llama-3.1-8B-Instruct"
 
     # ---- Load model without quantization for FSDP2 compatibility ----
@@ -53,8 +55,9 @@ def main():
         base_model,
         torch_dtype=torch.bfloat16,
         trust_remote_code=True,
-        use_auth_token=True
+        use_cache=False,
     )
+    model.gradient_checkpointing_enable()
     # ---- LoRA Configuration ----
     lora_config = LoraConfig(
         r=8,
@@ -79,11 +82,11 @@ def main():
     fsdp_kwargs = {
         "mp_policy": MixedPrecisionPolicy(
             param_dtype=torch.bfloat16,
-            reduce_dtype=torch.float16,
-        )
+            reduce_dtype=torch.bfloat16,
+        ),
+        "offload_policy": OffloadPolicy()
     }
     
-    from transformers.models.llama.modeling_llama import LlamaDecoderLayer
     for module in model.modules():
         if isinstance(module, LlamaDecoderLayer):
             fully_shard(module, mesh=device_mesh, **fsdp_kwargs)
@@ -119,7 +122,7 @@ def main():
     dataset_test = dataset_test.map(create_prompt)
 
     def tokenize_batch(batch):
-        return tokenize_function(batch, tokenizer, max_length=64)
+        return tokenize_function(batch, tokenizer, max_length=128)
 
     dataset_train = dataset_train.map(tokenize_batch, batched=True, remove_columns=['Context', 'Response'])
     dataset_validation = dataset_validation.map(tokenize_batch, batched=True, remove_columns=['Context', 'Response'])
@@ -132,7 +135,7 @@ def main():
     # ---- Training Loop ----
     model.train()
     trainable_params = [p for p in model.parameters() if p.requires_grad]
-    optimizer = torch.optim.AdamW(trainable_params, lr=1e-4)  # Reduced learning rate
+    optimizer = torch.optim.AdamW(trainable_params, lr=2e-3)  # Reduced learning rate
     
     if rank == 0:
         print(f"Number of trainable parameters: {len(trainable_params)}")
@@ -144,15 +147,19 @@ def main():
         attention_mask = batch["attention_mask"].to(device)
         labels = batch["labels"].to(device)
         outputs = model(input_ids=input_ids, attention_mask=attention_mask, labels=labels)
-        loss = outputs.loss
+        loss = outputs.loss / gradient_accumulation_steps
         loss.backward()
-        torch.nn.utils.clip_grad_norm_(trainable_params, max_norm=1.0)
-        optimizer.step()
-        optimizer.zero_grad()
+        if (step + 1) % gradient_accumulation_steps == 0:
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+            optimizer.step()
+            optimizer.zero_grad()
+            
+            if rank == 0:
+                print(f"Step {step+1}, Loss: {loss.item() * gradient_accumulation_steps}")
+        
+        total_loss += loss.item()
         torch.cuda.empty_cache()
-        if step % 10 == 0 and rank == 0:
-            print(f"Step {step}, Loss: {loss.item()}")
-        if step == 20:  # For demonstration, stop after 20 steps
+        if step > 20:  # For demonstration, stop after 20 steps
             break
 
     dist.destroy_process_group()
