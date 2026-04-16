@@ -142,9 +142,10 @@ def main(local_rank):
         for batch in dataloader:
             input_ids = batch["input_ids"].to(f"cuda:{local_rank}")
             attention_mask = batch["attention_mask"].to(f"cuda:{local_rank}")
-
+            
+            labels[attention_mask == 0] = -100  # ignore padding
             outputs = model(input_ids=input_ids, attention_mask=attention_mask,
-                            labels=input_ids)
+                            labels=labels)
             loss = outputs.loss / gradient_accumulation_steps
             loss.backward()
 
